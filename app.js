@@ -150,6 +150,11 @@ async function startCamera() {
   cameraError.hidden = true;
   cameraHint.textContent = 'Starting camera…';
 
+  // Kick off the portrait-segmentation model load now (fire-and-forget) so
+  // it's very likely already warm by the time the countdown finishes and
+  // capturePhoto() runs a few seconds from now.
+  getSegmenter().catch(() => {});
+
   // Stop any existing stream first
   stopCamera();
 
@@ -334,7 +339,179 @@ function enhancePhoto(ctx, width, height) {
   ctx.putImageData(imageData, 0, 0);
 }
 
-function capturePhoto() {
+/* ── Portrait composition (subject-aware crop + light background blur) ──────
+   Uses MediaPipe's selfie segmenter (~250KB model, WASM, runs fully in the
+   browser — no server calls, no per-photo cost) to find the subject's rough
+   bounding box, then: (1) crops to a better headshot composition with
+   sensible headroom, and (2) lightly blurs the background using a geometric
+   radial falloff sized around that bounding box — deliberately NOT a
+   per-pixel segmentation mask, because this model's pixel-level edges are
+   unreliable exactly where it matters (it routinely classifies fine hair
+   strands as background, which blurred the subject's own hair when tried).
+   A bounding-box radius can't make that mistake. Also deliberately a SUBTLE
+   blur (not full bokeh) so the booth's backdrop/branding stays legible
+   behind the subject, not a portrait-mode wash-out.
+   Falls back to leaving the canvas untouched if the model isn't ready, fails
+   to load, or the detected subject looks unreliable — the booth flow must
+   never be blocked or broken by this being best-effort. ────────────────── */
+
+const MEDIAPIPE_VERSION = '0.10.14';
+const SELFIE_SEGMENTER_MODEL_URL =
+  'https://storage.googleapis.com/mediapipe-models/image_segmenter/selfie_segmenter/float16/latest/selfie_segmenter.tflite';
+
+let segmenterPromise = null;
+
+function getSegmenter() {
+  if (!segmenterPromise) {
+    segmenterPromise = (async () => {
+      const { FilesetResolver, ImageSegmenter } = await import(
+        `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/vision_bundle.mjs`
+      );
+      const filesetResolver = await FilesetResolver.forVisionTasks(
+        `https://cdn.jsdelivr.net/npm/@mediapipe/tasks-vision@${MEDIAPIPE_VERSION}/wasm`
+      );
+      return ImageSegmenter.createFromOptions(filesetResolver, {
+        baseOptions: { modelAssetPath: SELFIE_SEGMENTER_MODEL_URL },
+        runningMode: 'IMAGE',
+        outputCategoryMask: true,
+        outputConfidenceMasks: false,
+      });
+    })().catch(err => {
+      console.warn('Portrait segmenter failed to load:', err);
+      segmenterPromise = null; // allow a retry on the next photo
+      return null;
+    });
+  }
+  return segmenterPromise;
+}
+
+function withTimeout(promise, ms) {
+  return Promise.race([
+    promise,
+    new Promise(resolve => setTimeout(() => resolve(null), ms)),
+  ]);
+}
+
+/**
+ * Mutates captureCanvas in place: blurs the background and crops to a
+ * headshot composition, using the segmentation mask to find the subject.
+ * No-ops (leaves captureCanvas untouched) if the model isn't available in
+ * time or the detected subject region looks unreliable.
+ */
+async function composePortrait() {
+  // Bounded wait — the model should already be warm from the countdown
+  // head-start, but never let this add more than a couple seconds to the
+  // capture flow if the network is having a slow moment.
+  const segmenter = await withTimeout(getSegmenter(), 2500);
+  if (!segmenter) return;
+
+  const w = captureCanvas.width;
+  const h = captureCanvas.height;
+
+  const result = segmenter.segment(captureCanvas);
+  const mask = result.categoryMask;
+  if (!mask) { result.close(); return; }
+  const maskData = mask.getAsUint8Array(); // selfie_segmenter: 0 = background, 255 = person
+
+  let minX = w, minY = h, maxX = 0, maxY = 0, personPixels = 0;
+  for (let y = 0; y < h; y++) {
+    const rowOffset = y * w;
+    for (let x = 0; x < w; x++) {
+      if (maskData[rowOffset + x] > 127) {
+        personPixels++;
+        if (x < minX) minX = x;
+        if (x > maxX) maxX = x;
+        if (y < minY) minY = y;
+        if (y > maxY) maxY = y;
+      }
+    }
+  }
+  result.close();
+
+  // Bail out if the detected region looks unreliable (near-empty or the
+  // model classified almost the whole frame as "person" — either way, not
+  // something we can build a sensible crop/blur from).
+  const personRatio = personPixels / (w * h);
+  if (personRatio < 0.03 || personRatio > 0.95) return;
+
+  /* ---- Light background blur ----
+     Deliberately geometric (a soft radial gradient sized around the known
+     person bounding box), NOT a per-pixel segmentation mask. The mask's
+     pixel-level edges are unreliable right where it matters most — selfie
+     segmenters routinely under-classify fine hair strands as background,
+     which made hair itself get blurred along with the background. A
+     bounding-box-based radial falloff can't make that mistake: the "stays
+     sharp" zone is sized generously around the subject, and the failure
+     mode of "why isn't the edge blurred" is far safer than "why is part of
+     the subject blurred". */
+  const blurredCanvas = document.createElement('canvas');
+  blurredCanvas.width = w;
+  blurredCanvas.height = h;
+  const blurredCtx = blurredCanvas.getContext('2d');
+  blurredCtx.filter = 'blur(6px)';
+  blurredCtx.drawImage(captureCanvas, 0, 0, w, h);
+
+  const cx = (minX + maxX) / 2;
+  const cy = (minY + maxY) / 2;
+  const personW = maxX - minX;
+  const personH = maxY - minY;
+  // Sharp radius comfortably covers the person bbox plus padding for hair/
+  // shoulders/motion; feather band blends sharp → blurred beyond that.
+  const sharpRadius = Math.max(personW, personH) / 2 + Math.max(personW, personH) * 0.4;
+  const featherStart = sharpRadius * 0.5;
+
+  const radialMaskCanvas = document.createElement('canvas');
+  radialMaskCanvas.width = w;
+  radialMaskCanvas.height = h;
+  const radialMaskCtx = radialMaskCanvas.getContext('2d');
+  const gradient = radialMaskCtx.createRadialGradient(cx, cy, featherStart, cx, cy, sharpRadius);
+  gradient.addColorStop(0, 'rgba(255,255,255,1)');
+  gradient.addColorStop(1, 'rgba(255,255,255,0)');
+  radialMaskCtx.fillStyle = gradient;
+  radialMaskCtx.fillRect(0, 0, w, h);
+
+  // Sharp subject, clipped to that radial mask.
+  const sharpMaskedCanvas = document.createElement('canvas');
+  sharpMaskedCanvas.width = w;
+  sharpMaskedCanvas.height = h;
+  const sharpCtx = sharpMaskedCanvas.getContext('2d');
+  sharpCtx.drawImage(captureCanvas, 0, 0, w, h);
+  sharpCtx.globalCompositeOperation = 'destination-in';
+  sharpCtx.drawImage(radialMaskCanvas, 0, 0, w, h);
+
+  // Composite: blurred background, sharp subject on top.
+  const finalCtx = captureCanvas.getContext('2d');
+  finalCtx.clearRect(0, 0, w, h);
+  finalCtx.drawImage(blurredCanvas, 0, 0, w, h);
+  finalCtx.drawImage(sharpMaskedCanvas, 0, 0, w, h);
+
+  /* ---- Crop to a headshot composition ----
+     Generous side/bottom margins (not a tight passport-photo crop) so the
+     booth's backdrop/branding around the subject stays visible. */
+  const marginX = personW * 0.5;
+  const marginTop = personH * 0.25;
+  const marginBottom = personH * 0.15;
+
+  const cropX = Math.max(0, minX - marginX);
+  const cropY = Math.max(0, minY - marginTop);
+  const cropRight = Math.min(w, maxX + marginX);
+  const cropBottom = Math.min(h, maxY + marginBottom);
+  const cropW = cropRight - cropX;
+  const cropH = cropBottom - cropY;
+
+  if (cropW < 40 || cropH < 40) return; // degenerate crop — keep the blur, skip cropping
+
+  const croppedCanvas = document.createElement('canvas');
+  croppedCanvas.width = cropW;
+  croppedCanvas.height = cropH;
+  croppedCanvas.getContext('2d').drawImage(captureCanvas, cropX, cropY, cropW, cropH, 0, 0, cropW, cropH);
+
+  captureCanvas.width = cropW;
+  captureCanvas.height = cropH;
+  captureCanvas.getContext('2d').drawImage(croppedCanvas, 0, 0);
+}
+
+async function capturePhoto() {
   const video = cameraVideo;
   const w = video.videoWidth  || 1080;
   const h = video.videoHeight || 1920;
@@ -353,6 +530,12 @@ function capturePhoto() {
     enhancePhoto(ctx, w, h);
   } catch (err) {
     console.warn('Photo enhancement skipped:', err); // fall back to the unenhanced capture
+  }
+
+  try {
+    await composePortrait();
+  } catch (err) {
+    console.warn('Portrait composition skipped:', err); // fall back to the plain enhanced capture
   }
 
   state.photoDataUrl = captureCanvas.toDataURL('image/jpeg', 0.95);
