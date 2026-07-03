@@ -1,0 +1,924 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover, interactive-widget=resizes-content" />
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <title>COTF Photo Booth</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='.9em' font-size='90'>📸</text></svg>" />
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Hanken+Grotesk:wght@400;600;700;800;900&family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=block" rel="stylesheet" />
+  <style>
+/* ── Reset ─────────────────────────────────────────────────────────────── */
+*, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+[hidden] { display: none !important; }
+
+/* ── Design tokens ─────────────────────────────────────────────────────── */
+:root {
+  --bg:           #0a0a0e;
+  --surface:      #13131a;
+  --surface-2:    #1c1c28;
+  --border:       #2a2a3c;
+  --accent:       #4f7ef7;
+  --accent-dark:  #3a63d4;
+  --accent-glow:  rgba(79,126,247,0.22);
+  --accent-bg:    rgba(79,126,247,0.10);
+  --success:      #22c55e;
+  --danger:       #ef4444;
+  --text-primary: #f0f0f8;
+  --text-secondary:#9898b8;
+  --text-muted:   #5a5a78;
+  --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', system-ui, sans-serif;
+  --radius:       14px;
+  --radius-lg:    20px;
+  --radius-pill:  999px;
+}
+
+html, body {
+  height: 100%;
+  overflow: hidden;
+  overscroll-behavior: none;
+  font-family: var(--font);
+  background: var(--bg);
+  color: var(--text-primary);
+  -webkit-tap-highlight-color: transparent;
+  -webkit-text-size-adjust: 100%;
+}
+
+body {
+  display: flex;
+  flex-direction: column;
+  position: relative;
+}
+
+/* ── Toast ─────────────────────────────────────────────────────────────── */
+.toast {
+  position: fixed;
+  top: 20px;
+  left: 50%;
+  transform: translateX(-50%) translateY(-80px);
+  z-index: 9000;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  padding: 14px 22px;
+  border-radius: var(--radius-pill);
+  font-size: 0.9rem;
+  font-weight: 500;
+  max-width: calc(100vw - 40px);
+  white-space: normal;
+  text-align: center;
+  box-shadow: 0 8px 32px rgba(0,0,0,0.5);
+  transition: transform 320ms cubic-bezier(0.34,1.56,0.64,1), opacity 320ms ease;
+  opacity: 0;
+  pointer-events: none;
+}
+.toast.show  { transform: translateX(-50%) translateY(0); opacity: 1; }
+.toast.warning { border-color:#f59e0b44; background:#1a150a; color:#fbbf24; }
+.toast.success { border-color:#22c55e44; background:#0a1a10; color:var(--success); }
+
+/* ── Screen shell ──────────────────────────────────────────────────────── */
+.screen {
+  position: fixed;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(12px);
+  transition: opacity 280ms ease, transform 280ms ease;
+  will-change: opacity, transform;
+  overflow: hidden;
+}
+.screen.active { opacity:1; pointer-events:all; transform:translateY(0); }
+.screen.exit   { opacity:0; transform:translateY(-12px); }
+
+/* ── Landscape rotate prompt ───────────────────────────────────────────── */
+#rotate-prompt {
+  display: none;
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  background: var(--bg);
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 24px;
+  text-align: center;
+  padding: 40px;
+}
+#rotate-prompt svg { width:64px; height:64px; color:var(--accent); animation: rot-hint 2s ease-in-out infinite; }
+#rotate-prompt p { font-size:1.1rem; color:var(--text-secondary); max-width:220px; line-height:1.5; }
+@keyframes rot-hint { 0%,100%{transform:rotate(0)} 50%{transform:rotate(-90deg)} }
+/* Driven by JS (physical screen.orientation, not viewport aspect ratio) —
+   using a CSS `orientation` media query here would misfire when the on-screen
+   keyboard shrinks the layout viewport enough to flip width>height, hiding
+   .screen mid-typing and blurring the focused input (closing the keyboard). */
+.is-landscape #rotate-prompt { display:flex; }
+.is-landscape .screen, .is-landscape .toast { visibility:hidden; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SCREEN 1 — DETAILS / FORM
+   Replica of Stitch design "LinkedIn Booth - Registration with COTF Banner"
+   (project 13635105857914498810, screen 0848577c52b24cc699eb2f300ce991d3).
+   Single-column layout built natively for iPad portrait — matches the
+   booth's existing portrait lock, scrolls between a fixed header and the
+   fixed bottom nav.
+══════════════════════════════════════════════════════════════════════════ */
+#screen-form {
+  --li-bg:                     #0b0e14;
+  --li-surface:                #10131a;
+  --li-surface-container-low:  #191c22;
+  --li-surface-container-lowest: #0b0e14;
+  --li-surface-container-high: #272a31;
+  --li-outline:                #8b919e;
+  --li-outline-variant:        #414752;
+  --li-on-surface:             #e1e2eb;
+  --li-on-surface-variant:     #c1c6d4;
+  --li-primary:                #a8c8ff;
+  --li-on-primary:             #003062;
+  --li-primary-container:      #0a66c2;
+  --li-secondary:               #a9c7ff;
+  --li-error:                  #ffb4ab;
+  --li-topbar-h: 68px;
+  background: var(--li-bg);
+  font-family: 'Hanken Grotesk', var(--font);
+  overflow: hidden;
+}
+
+/* Kinetic radial-gradient backdrop */
+#screen-form::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  pointer-events: none;
+  background:
+    radial-gradient(circle at 20% 30%, rgba(10,102,194,0.15) 0%, transparent 40%),
+    radial-gradient(circle at 80% 70%, rgba(10,102,194,0.10) 0%, transparent 40%),
+    var(--li-bg);
+}
+
+/* Fixed top bar: LIT logo left, "COTF | Powered by LIT School" right */
+.li-header {
+  position: absolute;
+  top: 0; left: 0; right: 0;
+  height: var(--li-topbar-h);
+  z-index: 3;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 20px;
+}
+.li-header-logo {
+  display: block;
+  height: 30px;
+  width: auto;
+}
+.li-header-right {
+  display: flex;
+  align-items: center;
+}
+.li-header-divider {
+  display: flex;
+  align-items: center;
+  padding-right: 12px;
+  margin-right: 10px;
+  border-right: 1px solid rgba(65,71,82,0.4);
+  font-size: 0.95rem;
+  font-weight: 900;
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.li-powered-by {
+  font-size: 0.62rem;
+  font-weight: 700;
+  letter-spacing: 0.13em;
+  text-transform: uppercase;
+  color: var(--li-outline);
+}
+
+/* Scrollable content below the fixed header */
+.form-layout {
+  position: absolute;
+  top: var(--li-topbar-h);
+  left: 0; right: 0;
+  bottom: 0;
+  z-index: 1;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 32px;
+  padding: 20px 20px 40px;
+}
+
+/* Large banner card — houses the COTF Summit logo prominently */
+.li-banner-card {
+  flex-shrink: 0;
+  width: 100%;
+  max-width: 460px;
+  background: rgba(29,32,38,0.4);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(168,200,255,0.15);
+  box-shadow: 0 12px 48px rgba(0,0,0,0.4);
+  border-radius: 2.5rem;
+  padding: 22px 20px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+.li-event-logo-lg {
+  display: block;
+  width: 100%;
+  max-width: 280px;
+  height: auto;
+  filter: drop-shadow(0 4px 24px rgba(0,0,0,0.5));
+}
+
+/* Hero copy — centered heading + paragraph */
+.hero-col {
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  max-width: 540px;
+  gap: 16px;
+}
+
+.hero-col h1 {
+  font-size: clamp(1.6rem, 5vw, 2.1rem);
+  font-weight: 800;
+  line-height: 1.25;
+  letter-spacing: -0.02em;
+  color: #fff;
+}
+.hero-col h1 .accent { color: var(--li-primary); }
+
+.hero-sub {
+  font-size: 0.95rem;
+  color: var(--li-on-surface-variant);
+  line-height: 1.6;
+}
+.hero-sub strong {
+  color: #fff;
+  font-weight: 600;
+  text-decoration: underline;
+  text-decoration-color: rgba(168,200,255,0.5);
+  text-underline-offset: 4px;
+}
+
+/* Form card */
+.form-card {
+  flex-shrink: 0;
+  background: rgba(29,32,38,0.4);
+  backdrop-filter: blur(24px);
+  -webkit-backdrop-filter: blur(24px);
+  border: 1px solid rgba(168,200,255,0.1);
+  box-shadow: 0 8px 32px rgba(0,0,0,0.37);
+  border-radius: 2.5rem;
+  padding: 34px 26px;
+  width: 100%;
+  max-width: 480px;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+  position: relative;
+  overflow: hidden;
+}
+/* Decorative blurred glow blobs (Stitch's glass-card corners) */
+.form-card::before,
+.form-card::after {
+  content: '';
+  position: absolute;
+  width: 200px;
+  height: 200px;
+  border-radius: 50%;
+  filter: blur(90px);
+  pointer-events: none;
+}
+.form-card::before { top: -90px; right: -90px; background: rgba(168,200,255,0.1); }
+.form-card::after   { bottom: -90px; left: -90px; background: rgba(169,199,255,0.1); }
+.form-card > form,
+.form-card > .btn-next {
+  flex-shrink: 0;
+}
+#registration-form {
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+
+/* Fields */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  position: relative;
+  z-index: 1;
+}
+.field-label {
+  font-size: 0.82rem;
+  font-weight: 600;
+  color: var(--li-on-surface);
+  letter-spacing: 0.03em;
+  margin-left: 4px;
+}
+.field-label .required { color: var(--li-error); }
+
+.field-input-wrap {
+  position: relative;
+}
+.field-input-icon {
+  position: absolute;
+  left: 16px;
+  top: 50%;
+  transform: translateY(-50%);
+  width: 20px;
+  height: 20px;
+  color: var(--li-outline);
+  pointer-events: none;
+  flex-shrink: 0;
+  display: flex;
+  align-items: center;
+  transition: color 200ms ease;
+}
+.field-input-icon svg { width:20px; height:20px; }
+.field-input-wrap:focus-within .field-input-icon { color: var(--li-primary); }
+
+.field-input {
+  width: 100%;
+  height: 60px;
+  background: rgba(11,14,20,0.3);
+  border: 1px solid rgba(65,71,82,0.3);
+  border-radius: 16px;
+  padding: 0 16px 0 48px;
+  font-size: 1rem;
+  color: #fff;
+  outline: none;
+  transition: border-color 300ms ease, box-shadow 300ms ease, background 300ms ease;
+  -webkit-appearance: none;
+  appearance: none;
+  font-family: inherit;
+}
+.field-input::placeholder { color: rgba(139,145,158,0.4); }
+.field-input:focus {
+  border-color: var(--li-primary);
+  box-shadow: 0 0 0 3px rgba(168,200,255,0.2);
+}
+.field-input.error { border-color: var(--li-error); box-shadow: 0 0 0 3px rgba(255,180,171,0.18); }
+.field-input.valid { border-color: #7fd99a; }
+
+.field-error {
+  font-size: 0.78rem;
+  color: var(--li-error);
+  min-height: 16px;
+  padding-left: 2px;
+  display: block;
+}
+
+/* Next button */
+.btn-next {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 60px;
+  width: 100%;
+  background: var(--li-primary);
+  color: var(--li-on-primary);
+  border: 1.5px solid rgba(255,255,255,0.5);
+  border-radius: 16px;
+  font-size: 1.05rem;
+  font-weight: 800;
+  letter-spacing: -0.01em;
+  cursor: pointer;
+  outline: none;
+  transition: filter 300ms ease, box-shadow 300ms ease, opacity 180ms ease, transform 120ms ease;
+  box-shadow: 0 6px 28px rgba(10,102,192,0.6), 0 0 0 4px rgba(168,200,255,0.15);
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  margin-top: 6px;
+  position: relative;
+  z-index: 1;
+}
+.btn-next:not(:disabled) { animation: btn-glow-pulse 2.4s ease-in-out infinite; }
+@keyframes btn-glow-pulse {
+  0%, 100% { box-shadow: 0 6px 28px rgba(10,102,192,0.6), 0 0 0 4px rgba(168,200,255,0.15); }
+  50%      { box-shadow: 0 6px 36px rgba(10,102,192,0.85), 0 0 0 7px rgba(168,200,255,0.28); }
+}
+.btn-next:not(:disabled):hover { filter: brightness(1.1); animation-play-state: paused; }
+.btn-next:active { transform: scale(0.98); }
+.btn-next:disabled, .btn-next[aria-disabled="true"] {
+  opacity: 0.45;
+  animation: none;
+  cursor: not-allowed;
+  pointer-events: none;
+  box-shadow: none;
+  border-color: rgba(255,255,255,0.15);
+}
+.btn-next svg { width:18px; height:18px; flex-shrink:0; transition: transform 300ms ease; }
+.btn-next:not(:disabled):hover svg { transform: translateX(3px); }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SCREEN 2 — CAMERA / PHOTO
+══════════════════════════════════════════════════════════════════════════ */
+#screen-camera { background: #000; }
+
+.camera-wrap { position: absolute; inset: 0; }
+.camera-video {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  transform: scaleX(-1);
+  display: block;
+}
+.camera-frame {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  box-shadow: inset 0 0 80px rgba(0,0,0,0.5);
+}
+
+.camera-ui {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+  padding-top: env(safe-area-inset-top, 20px);
+  padding-bottom: 36px;
+}
+
+.btn-back {
+  align-self: flex-start;
+  margin: 8px 12px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  background: rgba(0,0,0,0.5);
+  backdrop-filter: blur(8px);
+  -webkit-backdrop-filter: blur(8px);
+  border-radius: var(--radius-pill);
+  color: #fff;
+  height: 44px;
+  padding: 0 18px;
+  font-size: 0.9rem;
+  font-weight: 600;
+  border: none;
+  cursor: pointer;
+  outline: none;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+}
+.btn-back svg { width:18px; height:18px; }
+
+.camera-hint {
+  text-align: center;
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: rgba(255,255,255,0.8);
+  text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+  padding: 0 24px;
+}
+
+.camera-countdown {
+  text-align: center;
+  font-size: 7rem;
+  font-weight: 900;
+  color: #fff;
+  text-shadow: 0 0 40px rgba(0,0,0,0.8);
+  line-height: 1;
+  animation: countdown-pulse 1s ease-out;
+}
+@keyframes countdown-pulse {
+  0%   { transform:scale(1.25); opacity:0.6; }
+  40%  { transform:scale(1);    opacity:1; }
+  100% { transform:scale(1);    opacity:1; }
+}
+
+.btn-shutter {
+  width: 80px;
+  height: 80px;
+  border-radius: 50%;
+  background: rgba(255,255,255,0.95);
+  border: 4px solid rgba(255,255,255,0.5);
+  align-self: center;
+  cursor: pointer;
+  outline: none;
+  position: relative;
+  transition: transform 120ms ease, background 120ms ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.4);
+  flex-shrink: 0;
+}
+.btn-shutter:active { transform: scale(0.9); background: rgba(255,255,255,0.7); }
+.shutter-ring {
+  position: absolute;
+  inset: -8px;
+  border-radius: 50%;
+  border: 3px solid rgba(255,255,255,0.6);
+  pointer-events: none;
+}
+
+.camera-error-msg {
+  position: absolute;
+  inset: 0;
+  background: var(--bg);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 16px;
+  padding: 40px;
+  text-align: center;
+}
+.camera-error-msg svg { width:48px; height:48px; color:var(--danger); }
+.camera-error-msg p { font-size:1rem; color:var(--text-secondary); max-width:260px; line-height:1.5; }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SCREEN 3 — PREVIEW
+══════════════════════════════════════════════════════════════════════════ */
+#screen-preview { background: #000; }
+
+.preview-wrap { position: absolute; inset: 0; }
+.preview-img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
+  transform: scaleX(-1);
+}
+
+.preview-ui {
+  position: absolute;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  padding: 24px;
+  padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px));
+  background: linear-gradient(to top, rgba(0,0,0,0.9) 0%, transparent 100%);
+  display: flex;
+  flex-direction: column;
+  gap: 16px;
+}
+.preview-label {
+  text-align: center;
+  font-size: 1rem;
+  font-weight: 600;
+  color: rgba(255,255,255,0.9);
+  text-shadow: 0 1px 6px rgba(0,0,0,0.6);
+}
+.preview-actions { display: flex; gap: 14px; }
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  height: 56px;
+  padding: 0 24px;
+  border-radius: 16px;
+  font-size: 1rem;
+  font-weight: 700;
+  cursor: pointer;
+  border: none;
+  outline: none;
+  transition: opacity 180ms ease, transform 120ms ease, background 180ms ease;
+  -webkit-tap-highlight-color: transparent;
+  touch-action: manipulation;
+  user-select: none;
+  white-space: nowrap;
+}
+.btn:active { transform: scale(0.97); }
+
+.btn-primary {
+  background: var(--accent);
+  color: #fff;
+  flex: 1.5;
+  box-shadow: 0 4px 20px var(--accent-glow);
+}
+.btn-primary:hover { background: var(--accent-dark); }
+.btn-primary:disabled { opacity:0.35; cursor:not-allowed; pointer-events:none; box-shadow:none; }
+
+.btn-secondary {
+  background: rgba(255,255,255,0.12);
+  color: #fff;
+  border: 1px solid rgba(255,255,255,0.2);
+  flex: 1;
+  backdrop-filter: blur(8px);
+}
+.btn-secondary:hover { background: rgba(255,255,255,0.18); }
+
+.btn-icon { width:18px; height:18px; flex-shrink:0; }
+
+.spinner {
+  width: 20px;
+  height: 20px;
+  animation: spin 0.8s linear infinite;
+  flex-shrink: 0;
+}
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* ══════════════════════════════════════════════════════════════════════════
+   SCREEN 4 — DONE / THANK YOU
+══════════════════════════════════════════════════════════════════════════ */
+#screen-thankyou {
+  background: var(--bg);
+}
+
+.thankyou-body {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 40px 32px;
+  gap: 20px;
+  text-align: center;
+  height: 100%;
+}
+
+.success-icon { width: 80px; height: 80px; color: var(--success); }
+.success-icon svg { width:100%; height:100%; }
+
+.thankyou-heading {
+  font-size: clamp(2rem, 4vw, 2.8rem);
+  font-weight: 800;
+  letter-spacing: -0.03em;
+  line-height: 1.15;
+  color: var(--text-primary);
+}
+
+.thankyou-sub {
+  font-size: 1rem;
+  color: var(--text-secondary);
+  max-width: 300px;
+  line-height: 1.6;
+}
+
+.countdown-wrap { position:relative; width:68px; height:68px; margin-top:8px; }
+.countdown-ring { width:100%; height:100%; transform:rotate(-90deg); }
+.countdown-track { fill:none; stroke:var(--surface-2); stroke-width:4; }
+.countdown-arc {
+  fill: none;
+  stroke: var(--accent);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 163.36;
+  stroke-dashoffset: 0;
+  transition: stroke-dashoffset 1s linear;
+}
+.countdown-number {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.4rem;
+  font-weight: 800;
+  color: var(--text-primary);
+}
+.countdown-caption { font-size:0.82rem; color:var(--text-muted); }
+
+/* ── Admin tap zone ────────────────────────────────────────────────────── */
+#admin-tap-zone {
+  position: fixed;
+  top: 0; right: 0;
+  width: 60px; height: 60px;
+  z-index: 9998;
+  background: transparent;
+  -webkit-tap-highlight-color: transparent;
+}
+  </style>
+</head>
+<body>
+
+  <!-- Rotate prompt (portrait-only enforcement) -->
+  <div id="rotate-prompt" aria-hidden="true">
+    <svg viewBox="0 0 48 48" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M34 4H14C11.8 4 10 5.8 10 8v32c0 2.2 1.8 4 4 4h20c2.2 0 4-1.8 4-4V8c0-2.2-1.8-4-4-4z" stroke="currentColor" stroke-width="2.5" stroke-linecap="round"/>
+      <path d="M24 38h.01" stroke="currentColor" stroke-width="3" stroke-linecap="round"/>
+    </svg>
+    <p>Please rotate to portrait</p>
+  </div>
+
+  <!-- Toast -->
+  <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       SCREEN 1 — DETAILS
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="screen-form" class="screen active" aria-label="Registration">
+
+    <!-- Fixed top bar -->
+    <div class="li-header">
+      <img class="li-header-logo" alt="LIT School"
+        src="https://ijhwwsiwlmplkzktgcmv.supabase.co/storage/v1/object/public/Misc./lit%20logo.png" />
+      <div class="li-header-right">
+        <span class="li-header-divider">COTF</span>
+        <span class="li-powered-by">Powered by LIT School</span>
+      </div>
+    </div>
+
+    <!-- Scrollable content: banner, heading, form, feature badges -->
+    <div class="form-layout">
+
+      <!-- Large banner card -->
+      <div class="li-banner-card">
+        <img class="li-event-logo-lg" alt="Careers of the Future Summit"
+          src="https://ijhwwsiwlmplkzktgcmv.supabase.co/storage/v1/object/public/Misc/lit-website/cotf-logo(white).svg" />
+      </div>
+
+      <!-- Heading + paragraph -->
+      <div class="hero-col">
+        <h1>Get Your Professional <span class="accent">LinkedIn Headshot</span></h1>
+
+        <p class="hero-sub">
+          Step into the booth for a high-end photo, organized by
+          <strong>LIT School</strong>. Your portraits will be delivered instantly to your inbox.
+        </p>
+      </div>
+
+      <!-- Form card -->
+      <div class="form-card">
+        <form id="registration-form" novalidate>
+
+          <div class="field-group">
+            <label for="field-name" class="field-label">
+              Full Name <span class="required" aria-hidden="true">*</span>
+            </label>
+            <div class="field-input-wrap">
+              <span class="field-input-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <circle cx="12" cy="7" r="4" stroke="currentColor" stroke-width="2"/>
+                </svg>
+              </span>
+              <input id="field-name" name="name" type="text" class="field-input"
+                placeholder="Jane Smith"
+                autocomplete="name" autocorrect="off" autocapitalize="words"
+                enterkeyhint="next" required />
+            </div>
+            <span class="field-error" id="error-name" role="alert"></span>
+          </div>
+
+          <div class="field-group">
+            <label for="field-email" class="field-label">
+              University Email <span class="required" aria-hidden="true">*</span>
+            </label>
+            <div class="field-input-wrap">
+              <span class="field-input-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M4 4h16c1.1 0 2 .9 2 2v12c0 1.1-.9 2-2 2H4c-1.1 0-2-.9-2-2V6c0-1.1.9-2 2-2z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                  <path d="m22 6-10 7L2 6" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </span>
+              <input id="field-email" name="email" type="email" class="field-input"
+                placeholder="jane.smith@university.edu"
+                autocomplete="email" autocorrect="off" autocapitalize="none"
+                inputmode="email" enterkeyhint="next" required />
+            </div>
+            <span class="field-error" id="error-email" role="alert"></span>
+          </div>
+
+          <div class="field-group">
+            <label for="field-phone" class="field-label">
+              Mobile Number <span class="required" aria-hidden="true">*</span>
+            </label>
+            <div class="field-input-wrap">
+              <span class="field-input-icon" aria-hidden="true">
+                <svg viewBox="0 0 24 24" fill="none">
+                  <path d="M22 16.92v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07A19.5 19.5 0 0 1 4.69 12 19.79 19.79 0 0 1 1.61 3.4 2 2 0 0 1 3.6 1.22h3a2 2 0 0 1 2 1.72c.127.96.361 1.903.7 2.81a2 2 0 0 1-.45 2.11L7.91 8.78a16 16 0 0 0 6.29 6.29l.95-.96a2 2 0 0 1 2.11-.45c.907.339 1.85.573 2.81.7A2 2 0 0 1 22 16.92z" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+                </svg>
+              </span>
+              <input id="field-phone" name="phone" type="tel" class="field-input"
+                placeholder="+91 98765 43210"
+                autocomplete="tel" inputmode="tel"
+                enterkeyhint="done" required />
+            </div>
+            <span class="field-error" id="error-phone" role="alert"></span>
+          </div>
+
+        </form>
+
+        <button id="btn-continue" class="btn-next" disabled aria-disabled="true">
+          Next: Capture Photo
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       SCREEN 2 — CAMERA / PHOTO
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="screen-camera" class="screen" aria-label="Camera">
+
+    <div class="camera-wrap">
+      <video id="camera-video" class="camera-video" playsinline autoplay muted aria-label="Camera preview"></video>
+      <div class="camera-frame" aria-hidden="true"></div>
+    </div>
+
+    <div class="camera-ui">
+      <button id="btn-camera-back" class="btn-back" aria-label="Back to form">
+        <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M19 12H5M11 6l-6 6 6 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Back
+      </button>
+
+      <div class="camera-hint" aria-live="polite" id="camera-hint">Position yourself in the frame</div>
+
+      <div id="camera-countdown" class="camera-countdown" aria-live="assertive" aria-label="Photo taken automatically" hidden></div>
+
+      <button id="btn-capture" class="btn-shutter" aria-label="Take photo">
+        <span class="shutter-ring" aria-hidden="true"></span>
+      </button>
+    </div>
+
+    <div id="camera-error" class="camera-error-msg" role="alert" hidden>
+      <svg viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="2"/>
+        <path d="M12 8v4M12 16h.01" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+      </svg>
+      <p id="camera-error-text">Camera unavailable</p>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       SCREEN 3 — PREVIEW (fullscreen, no nav)
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="screen-preview" class="screen" aria-label="Photo preview">
+    <div class="preview-wrap">
+      <img id="preview-img" class="preview-img" src="" alt="Your captured photo" />
+    </div>
+
+    <div class="preview-ui">
+      <p class="preview-label">Happy with this photo?</p>
+      <div class="preview-actions">
+        <button id="btn-retake" class="btn btn-secondary">
+          <svg class="btn-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M1 4v6h6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+            <path d="M3.51 15a9 9 0 1 0 .49-4.95L1 10" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+          Retake
+        </button>
+        <button id="btn-submit" class="btn btn-primary">
+          <span id="submit-label">Submit</span>
+          <svg id="submit-spinner" class="spinner" viewBox="0 0 24 24" fill="none" aria-hidden="true" hidden>
+            <circle cx="12" cy="12" r="10" stroke="currentColor" stroke-width="3" stroke-dasharray="40 20" stroke-linecap="round"/>
+          </svg>
+          <svg id="submit-icon" class="btn-icon" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+            <path d="M5 12h14M13 6l6 6-6 6" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </section>
+
+  <!-- ═══════════════════════════════════════════════════════════════════
+       SCREEN 4 — DONE / THANK YOU
+  ═══════════════════════════════════════════════════════════════════════ -->
+  <section id="screen-thankyou" class="screen" aria-label="Submission complete">
+
+    <div class="thankyou-body">
+      <div class="success-icon" aria-hidden="true">
+        <svg viewBox="0 0 80 80" fill="none">
+          <circle cx="40" cy="40" r="36" stroke="currentColor" stroke-width="4"/>
+          <path d="M24 40l12 12 20-20" stroke="currentColor" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+      </div>
+
+      <h2 class="thankyou-heading">Thanks, <span id="thankyou-name">there</span>!</h2>
+      <p class="thankyou-sub">Your photo has been sent. Check your inbox shortly.</p>
+
+      <div class="countdown-wrap" aria-label="Auto-reset countdown" role="timer">
+        <svg class="countdown-ring" viewBox="0 0 60 60" aria-hidden="true">
+          <circle class="countdown-track" cx="30" cy="30" r="26"/>
+          <circle id="countdown-arc" class="countdown-arc" cx="30" cy="30" r="26"/>
+        </svg>
+        <span id="countdown-number" class="countdown-number" aria-live="polite">5</span>
+      </div>
+      <p class="countdown-caption">Restarting for next person…</p>
+    </div>
+  </section>
+
+  <!-- Admin tap zone -->
+  <div id="admin-tap-zone" aria-hidden="true"></div>
+
+  <!-- Off-screen capture canvas -->
+  <canvas id="capture-canvas" style="display:none" aria-hidden="true"></canvas>
+
+  <script src="config.js"></script>
+  <script src="app.js"></script>
+</body>
+</html>

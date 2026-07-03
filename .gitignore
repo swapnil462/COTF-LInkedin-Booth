@@ -1,0 +1,7 @@
+# Supabase credentials — copy config.example.js to config.js and fill in
+config.js
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db
+*.swp
