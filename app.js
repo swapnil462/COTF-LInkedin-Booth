@@ -424,13 +424,13 @@ async function insertBoothRecord(photoUrl, maxAttempts = 3) {
 async function sendBoothPhotoEmail(name, email, photoUrl) {
   if (!photoUrl) return; // nothing to send if the photo never made it to Storage
 
-  const firstName = name.split(' ')[0] || 'there';
   const content =
-    `Hi ${firstName},\n\n` +
-    `Thanks for stopping by the COTF photo booth! Here's your photo:\n\n` +
-    `<img src="${photoUrl}" alt="Your COTF Booth photo" style="max-width:480px;width:100%;border-radius:8px;margin-top:12px;" />\n\n` +
-    `Or open it directly: ${photoUrl}\n\n` +
-    `See you around!\n— COTF Booth`;
+    `Hey,\n\n` +
+    `Your old profile picture had a good run.\n` +
+    `<strong>We've attached its replacement.</strong>\n\n` +
+    `<img src="${photoUrl}" alt="Your new LinkedIn headshot" style="max-width:480px;width:100%;border-radius:12px;margin:8px 0 20px;display:block;" />\n\n` +
+    `<strong style="font-size:1.05em;">Go make the switch.</strong>\n\n` +
+    `<a href="${photoUrl}" style="color:#888;font-size:0.85em;">Or open your photo directly</a>`;
 
   try {
     const res = await fetch(`${CONFIG.LITDASH_SUPABASE_URL}/functions/v1/send-email`, {
@@ -442,7 +442,7 @@ async function sendBoothPhotoEmail(name, email, photoUrl) {
       body: JSON.stringify({
         type:      'custom',
         recipient: { email, name },
-        subject:   'Your COTF Photo Booth picture 📸',
+        subject:   'Main character energy has been delivered.',
         content,
       }),
     });
