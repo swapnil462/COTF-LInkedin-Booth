@@ -275,6 +275,65 @@ btnCapture.addEventListener('click', () => {
   capturePhoto();
 });
 
+/**
+ * Auto-levels (percentile-clipped contrast stretch) + a mild saturation
+ * boost — the same class of adjustment phone camera apps apply automatically,
+ * done here in plain Canvas 2D pixel manipulation (getImageData/putImageData
+ * are universal HTML5 Canvas API, supported in Safari/iOS since ~2011 — no
+ * exotic or Chromium-only APIs involved).
+ */
+function enhancePhoto(ctx, width, height) {
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const data = imageData.data;
+  const len = data.length;
+
+  // Build a luminance histogram to find where the actual content sits,
+  // so the stretch adapts to this photo's lighting instead of a fixed formula.
+  const histogram = new Uint32Array(256);
+  for (let i = 0; i < len; i += 4) {
+    const lum = (data[i] * 0.299 + data[i + 1] * 0.587 + data[i + 2] * 0.114) | 0;
+    histogram[lum]++;
+  }
+
+  // Clip the darkest/brightest 1% so a few stray noisy pixels don't skew
+  // the stretch range.
+  const totalPixels = len / 4;
+  const clipCount = totalPixels * 0.01;
+
+  let lo = 0, hi = 255, count = 0;
+  for (let i = 0; i < 256; i++) {
+    count += histogram[i];
+    if (count > clipCount) { lo = i; break; }
+  }
+  count = 0;
+  for (let i = 255; i >= 0; i--) {
+    count += histogram[i];
+    if (count > clipCount) { hi = i; break; }
+  }
+  if (hi <= lo) return; // flat/degenerate image — nothing sensible to stretch
+
+  const range = hi - lo;
+  const saturationBoost = 1.15;
+
+  for (let i = 0; i < len; i += 4) {
+    let r = ((data[i]     - lo) / range) * 255;
+    let g = ((data[i + 1] - lo) / range) * 255;
+    let b = ((data[i + 2] - lo) / range) * 255;
+
+    // Boost saturation around each pixel's own gray value, after the stretch.
+    const gray = r * 0.299 + g * 0.587 + b * 0.114;
+    r = gray + (r - gray) * saturationBoost;
+    g = gray + (g - gray) * saturationBoost;
+    b = gray + (b - gray) * saturationBoost;
+
+    data[i]     = r < 0 ? 0 : r > 255 ? 255 : r;
+    data[i + 1] = g < 0 ? 0 : g > 255 ? 255 : g;
+    data[i + 2] = b < 0 ? 0 : b > 255 ? 255 : b;
+  }
+
+  ctx.putImageData(imageData, 0, 0);
+}
+
 function capturePhoto() {
   const video = cameraVideo;
   const w = video.videoWidth  || 1080;
@@ -288,6 +347,13 @@ function capturePhoto() {
   ctx.translate(w, 0);
   ctx.scale(-1, 1);
   ctx.drawImage(video, 0, 0, w, h);
+  ctx.setTransform(1, 0, 0, 1, 0, 0); // reset mirror transform before pixel ops
+
+  try {
+    enhancePhoto(ctx, w, h);
+  } catch (err) {
+    console.warn('Photo enhancement skipped:', err); // fall back to the unenhanced capture
+  }
 
   state.photoDataUrl = captureCanvas.toDataURL('image/jpeg', 0.95);
   previewImg.src = state.photoDataUrl;
